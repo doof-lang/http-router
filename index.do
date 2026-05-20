@@ -1,0 +1,370 @@
+import { Request, Response } from "std/http-server"
+import { Path, parsePath } from "std/url"
+
+const SEGMENT_LITERAL = 0
+const SEGMENT_PARAM = 1
+const SEGMENT_WILDCARD = 2
+
+export class RoutePatternError {
+  readonly kind: string
+  readonly index: int
+  readonly message: string
+}
+
+export class RouteSegment {
+  readonly kind: int
+  readonly text: string
+}
+
+export class RoutePattern {
+  readonly pattern: string
+  private readonly segments: readonly RouteSegment[]
+  private readonly hasWildcard: bool
+}
+
+export class RouteMatch {
+  readonly params: readonly Map<string, string>
+  readonly remaining: Path
+
+  get(name: string): string {
+    value := params.get(name) else {
+      panic("Route variable '${name}' is not bound")
+    }
+    return value
+  }
+}
+
+export class HttpRequest {
+  readonly method: string
+  readonly path: string
+  readonly serverRequest: Request | null = null
+}
+
+export type HttpResponse = Response
+export type RouteHandler = (it: RouteMatch, request: HttpRequest): HttpResponse
+
+export class RegisteredRoute {
+  readonly method: string | null
+  readonly pattern: RoutePattern
+  readonly prefix: bool
+  readonly handler: RouteHandler
+}
+
+export class Router {
+  private routes: RegisteredRoute[] = []
+
+  get(pattern: string, handler: RouteHandler): Router {
+    return this.add("GET", pattern, false, handler)
+  }
+
+  head(pattern: string, handler: RouteHandler): Router {
+    return this.add("HEAD", pattern, false, handler)
+  }
+
+  post(pattern: string, handler: RouteHandler): Router {
+    return this.add("POST", pattern, false, handler)
+  }
+
+  put(pattern: string, handler: RouteHandler): Router {
+    return this.add("PUT", pattern, false, handler)
+  }
+
+  delete(pattern: string, handler: RouteHandler): Router {
+    return this.add("DELETE", pattern, false, handler)
+  }
+
+  connect(pattern: string, handler: RouteHandler): Router {
+    return this.add("CONNECT", pattern, false, handler)
+  }
+
+  options(pattern: string, handler: RouteHandler): Router {
+    return this.add("OPTIONS", pattern, false, handler)
+  }
+
+  trace(pattern: string, handler: RouteHandler): Router {
+    return this.add("TRACE", pattern, false, handler)
+  }
+
+  patch(pattern: string, handler: RouteHandler): Router {
+    return this.add("PATCH", pattern, false, handler)
+  }
+
+  route(pattern: string, handler: RouteHandler): Router {
+    return this.add(null, pattern, true, handler)
+  }
+
+  handle(request: Request | HttpRequest): HttpResponse | null {
+    routedRequest := routerRequest(request)
+    parsed := parsePath(routedRequest.path)
+    path := case parsed {
+      s: Success -> s.value,
+      _: Failure -> null,
+    }
+    if path == null {
+      return null
+    }
+
+    for route of this.routes {
+      if route.method != null && route.method! != routedRequest.method {
+        continue
+      }
+
+      matched := if route.prefix
+        then matchRoutePrefix(route.pattern, path)
+        else matchRoute(route.pattern, path)
+      if matched == null {
+        continue
+      }
+
+      return route.handler(matched!, routedRequest)
+    }
+
+    return null
+  }
+
+  private add(method: string | null, pattern: string, prefix: bool, handler: RouteHandler): Router {
+    compiled := compileRoutePatternOrPanic(pattern)
+
+    this.routes.push(RegisteredRoute {
+      method,
+      pattern: compiled,
+      prefix,
+      handler,
+    })
+    return this
+  }
+}
+
+function compileRoutePatternOrPanic(pattern: string): RoutePattern {
+  case compileRoutePattern(pattern) {
+    s: Success -> return s.value
+    f: Failure -> panic("Invalid route pattern '${pattern}': ${f.error.message}")
+  }
+}
+
+function routerRequest(request: Request | HttpRequest): HttpRequest {
+  return case request {
+    routed: HttpRequest -> routed,
+    server: Request -> HttpRequest {
+      method: server.method,
+      path: server.path,
+      serverRequest: server,
+    },
+  }
+}
+
+export function compileRoutePattern(pattern: string): Result<RoutePattern, RoutePatternError> {
+  segments: RouteSegment[] := []
+  paramNames: string[] := []
+  rawSegments := normalizedSegments(pattern)
+
+  for index of 0..<rawSegments.length {
+    segment := rawSegments[index]
+    if segment == "*" {
+      if index != rawSegments.length - 1 {
+        return patternError(
+          "non-final-wildcard",
+          segmentIndex(pattern, index),
+          "Route wildcard must be the final segment",
+        )
+      }
+      segments.push(RouteSegment { kind: SEGMENT_WILDCARD, text: "" })
+      continue
+    }
+
+    if segment.startsWith(":") {
+      name := segment.slice(1)
+      if name.length == 0 {
+        return patternError(
+          "empty-param",
+          segmentIndex(pattern, index),
+          "Route parameter names cannot be empty",
+        )
+      }
+      if !isValidParamName(name) {
+        return patternError(
+          "invalid-param",
+          segmentIndex(pattern, index),
+          "Route parameter names must start with a letter or '_' and contain only letters, digits, or '_'",
+        )
+      }
+      if paramNames.contains(name) {
+        return patternError(
+          "duplicate-param",
+          segmentIndex(pattern, index),
+          "Route parameter names must be unique",
+        )
+      }
+      paramNames.push(name)
+      segments.push(RouteSegment { kind: SEGMENT_PARAM, text: name })
+      continue
+    }
+
+    segments.push(RouteSegment { kind: SEGMENT_LITERAL, text: segment })
+  }
+
+  return Success {
+    value: RoutePattern {
+      pattern,
+      segments: segments.buildReadonly(),
+      hasWildcard: segments.length > 0 && segments[segments.length - 1].kind == SEGMENT_WILDCARD,
+    }
+  }
+}
+
+export function matchRoute(pattern: RoutePattern, path: Path): RouteMatch | null {
+  matched := matchCompiled(pattern, path, false)
+  if matched == null {
+    return null
+  }
+  return matched!
+}
+
+export function matchRoutePrefix(pattern: RoutePattern, path: Path): RouteMatch | null {
+  matched := matchCompiled(pattern, path, true)
+  if matched == null {
+    return null
+  }
+  return matched!
+}
+
+function matchCompiled(pattern: RoutePattern, path: Path, allowPrefix: bool): RouteMatch | null {
+  params: Map<string, string> := {}
+  let segmentIndex = 0
+
+  for routeSegment of pattern.segments {
+    if routeSegment.kind == SEGMENT_WILDCARD {
+      return RouteMatch {
+        params: params.buildReadonly(),
+        remaining: emptyRemainingPath(),
+      }
+    }
+
+    if segmentIndex >= path.segments.length {
+      return null
+    }
+
+    pathSegment := path.segments[segmentIndex]
+    if routeSegment.kind == SEGMENT_LITERAL {
+      if pathSegment != routeSegment.text {
+        return null
+      }
+    } else {
+      params[routeSegment.text] = pathSegment
+    }
+
+    segmentIndex += 1
+  }
+
+  if segmentIndex < path.segments.length {
+    if !allowPrefix {
+      return null
+    }
+    return RouteMatch {
+      params: params.buildReadonly(),
+      remaining: remainingPath(path, segmentIndex),
+    }
+  }
+
+  return RouteMatch {
+    params: params.buildReadonly(),
+    remaining: emptyRemainingPath(),
+  }
+}
+
+function normalizedSegments(pattern: string): readonly string[] {
+  let start = 0
+  let end = pattern.length
+
+  while start < end && pattern.charAt(start) == '/' {
+    start += 1
+  }
+
+  while end > start && pattern.charAt(end - 1) == '/' {
+    end -= 1
+  }
+
+  if start >= end {
+    return readonly []
+  }
+
+  return pattern.substring(start, end).split("/").buildReadonly()
+}
+
+function remainingPath(path: Path, start: int): Path {
+  segments: string[] := []
+  for index of start..<path.segments.length {
+    segments.push(path.segments[index])
+  }
+  return Path {
+    absolute: false,
+    segments: segments.buildReadonly(),
+  }
+}
+
+function emptyRemainingPath(): Path {
+  return Path {
+    absolute: false,
+    segments: readonly [],
+  }
+}
+
+function isValidParamName(name: string): bool {
+  if name.length == 0 {
+    return false
+  }
+
+  first := name.charAt(0)
+  if !isAlpha(first) && first != '_' {
+    return false
+  }
+
+  for index of 1..<name.length {
+    current := name.charAt(index)
+    if !isAlpha(current) && !isDigit(current) && current != '_' {
+      return false
+    }
+  }
+
+  return true
+}
+
+function isAlpha(value: char): bool {
+  return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z')
+}
+
+function isDigit(value: char): bool {
+  return value >= '0' && value <= '9'
+}
+
+function patternError(kind: string, index: int, message: string): Result<RoutePattern, RoutePatternError> {
+  return Failure {
+    error: RoutePatternError {
+      kind,
+      index,
+      message,
+    }
+  }
+}
+
+function segmentIndex(pattern: string, targetSegment: int): int {
+  let segment = 0
+  let index = 0
+
+  while index < pattern.length && pattern.charAt(index) == '/' {
+    index += 1
+  }
+
+  while segment < targetSegment && index < pattern.length {
+    if pattern.charAt(index) == '/' {
+      segment += 1
+      while index < pattern.length && pattern.charAt(index) == '/' {
+        index += 1
+      }
+      continue
+    }
+    index += 1
+  }
+
+  return index
+}

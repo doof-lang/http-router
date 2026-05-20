@@ -1,0 +1,13 @@
+{
+  "name": "std/http-router",
+  "version": "0.1.0",
+  "license": "ISC",
+  "dependencies": {
+    "std/http-server": {
+      "path": "../http-server"
+    },
+    "std/url": {
+      "path": "../url"
+    }
+  }
+}

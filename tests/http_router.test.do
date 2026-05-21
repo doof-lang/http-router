@@ -73,14 +73,6 @@ export function testMultipleNamedParamCapture(): void {
   Assert.equal(matched!.get("postId"), "99")
 }
 
-export function testWildcardMatchesRestWithoutCapture(): void {
-  matched := matchRoute(pattern("/files/*"), path("/files/a/b/c"))
-
-  Assert.isTrue(matched != null)
-  Assert.equal(matched!.params.size, 0)
-  Assert.equal(matched!.remaining.segmentCount(), 0)
-}
-
 export function testNoMatchCases(): void {
   Assert.isTrue(matchRoute(pattern("/users/:id"), path("/teams/42")) == null)
   Assert.isTrue(matchRoute(pattern("/users/:id"), path("/users")) == null)
@@ -175,7 +167,8 @@ export function testInvalidPatternsAreRejected(): void {
   assertCompileError("/users/:id/posts/:id", "duplicate-param")
   assertCompileError("/users/:", "empty-param")
   assertCompileError("/users/:9id", "invalid-param")
-  assertCompileError("/files/*/edit", "non-final-wildcard")
+  assertCompileError("/files/*", "wildcard-unsupported")
+  assertCompileError("/files/*/edit", "wildcard-unsupported")
 }
 
 export function testRouterGetMatchesExactPathAndMethod(): void {
@@ -188,7 +181,8 @@ export function testRouterGetMatchesExactPathAndMethod(): void {
 
   Assert.isTrue(matched != null)
   Assert.equal(matched!.status, 200)
-  Assert.isTrue(wrongMethod == null)
+  Assert.isTrue(wrongMethod != null)
+  Assert.equal(wrongMethod!.status, 405)
   Assert.isTrue(trailing == null)
 }
 
@@ -229,6 +223,31 @@ export function testRouterReturnsNullWhenNothingMatches(): void {
     .get("/news", (match: RouteMatch, request: HttpRequest): HttpResponse => text(200, "news"))
 
   Assert.isTrue(router.handle(request("GET", "/missing")) == null)
+}
+
+export function testRouterReturnsMethodNotAllowedForTerminatingMethodMismatch(): void {
+  router := Router()
+    .get("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(200))
+    .post("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(201))
+
+  matched := router.handle(request("PUT", "/items"))
+
+  Assert.isTrue(matched != null)
+  Assert.equal(matched!.status, 405)
+  Assert.equal(matched!.headers.length, 1)
+  Assert.equal(matched!.headers[0].name, "Allow")
+  Assert.equal(matched!.headers[0].value, "GET, POST")
+}
+
+export function testRouterKeepsScanningAfterMethodMismatch(): void {
+  router := Router()
+    .get("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(200))
+    .route("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(202))
+
+  matched := router.handle(request("PUT", "/items"))
+
+  Assert.isTrue(matched != null)
+  Assert.equal(matched!.status, 202)
 }
 
 export function testRouterRouteMatchesAnyMethodAsPrefix(): void {

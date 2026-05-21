@@ -1,10 +1,10 @@
 import { Request, Response } from "std/http-server"
+import { HttpHeader } from "std/http"
 import { extension, join } from "std/path"
 import { Path, parsePath } from "std/url"
 
 const SEGMENT_LITERAL = 0
 const SEGMENT_PARAM = 1
-const SEGMENT_WILDCARD = 2
 
 export class RoutePatternError {
   readonly kind: string
@@ -26,7 +26,6 @@ export class RouteSegment {
 export class RoutePattern {
   readonly pattern: string
   private readonly segments: readonly RouteSegment[]
-  private readonly hasWildcard: bool
 }
 
 export class RouteMatch {
@@ -115,11 +114,8 @@ export class Router {
       return null
     }
 
+    allowedMethods: string[] := []
     for route of this.routes {
-      if route.method != null && route.method! != routedRequest.method {
-        continue
-      }
-
       matched := if route.prefix
         then matchRoutePrefix(route.pattern, path)
         else matchRoute(route.pattern, path)
@@ -127,7 +123,18 @@ export class Router {
         continue
       }
 
+      if route.method != null && route.method! != routedRequest.method {
+        if !allowedMethods.contains(route.method!) {
+          allowedMethods.push(route.method!)
+        }
+        continue
+      }
+
       return route.handler(matched!, routedRequest)
+    }
+
+    if allowedMethods.length > 0 {
+      return methodNotAllowedResponse(allowedMethods.buildReadonly())
     }
 
     return null
@@ -172,15 +179,11 @@ export function compileRoutePattern(pattern: string): Result<RoutePattern, Route
   for index of 0..<rawSegments.length {
     segment := rawSegments[index]
     if segment == "*" {
-      if index != rawSegments.length - 1 {
-        return patternError(
-          "non-final-wildcard",
-          segmentIndex(pattern, index),
-          "Route wildcard must be the final segment",
-        )
-      }
-      segments.push(RouteSegment { kind: SEGMENT_WILDCARD, text: "" })
-      continue
+      return patternError(
+        "wildcard-unsupported",
+        segmentIndex(pattern, index),
+        "Route wildcards are not supported; use Router.route(pattern, handler) for prefix routing",
+      )
     }
 
     if segment.startsWith(":") {
@@ -218,7 +221,6 @@ export function compileRoutePattern(pattern: string): Result<RoutePattern, Route
     value: RoutePattern {
       pattern,
       segments: segments.buildReadonly(),
-      hasWildcard: segments.length > 0 && segments[segments.length - 1].kind == SEGMENT_WILDCARD,
     }
   }
 }
@@ -311,13 +313,6 @@ function matchCompiled(pattern: RoutePattern, path: Path, allowPrefix: bool): Ro
   let segmentIndex = 0
 
   for routeSegment of pattern.segments {
-    if routeSegment.kind == SEGMENT_WILDCARD {
-      return RouteMatch {
-        params: params.buildReadonly(),
-        remaining: emptyRemainingPath(),
-      }
-    }
-
     if segmentIndex >= path.segments.length {
       return null
     }
@@ -348,6 +343,31 @@ function matchCompiled(pattern: RoutePattern, path: Path, allowPrefix: bool): Ro
     params: params.buildReadonly(),
     remaining: emptyRemainingPath(),
   }
+}
+
+function methodNotAllowedResponse(methods: readonly string[]): HttpResponse {
+  headers: HttpHeader[] := []
+  headers.push(HttpHeader {
+    name: "Allow",
+    value: joinMethods(methods),
+  })
+  return Response {
+    status: 405,
+    headers: headers.buildReadonly(),
+    body: readonly [],
+  }
+}
+
+function joinMethods(methods: readonly string[]): string {
+  if methods.length == 0 {
+    return ""
+  }
+
+  let text = methods[0]
+  for index of 1..<methods.length {
+    text = "${text}, ${methods[index]}"
+  }
+  return text
 }
 
 function normalizedSegments(pattern: string): readonly string[] {

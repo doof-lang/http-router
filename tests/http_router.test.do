@@ -10,6 +10,8 @@ import {
   compileRoutePattern,
   matchRoute,
   matchRoutePrefix,
+  mimeTypeForFileSystemPath,
+  pathToFileSystemPath,
 } from "../index"
 
 function path(text: string): Path => try! parsePath(text)
@@ -31,6 +33,13 @@ function empty(status: int): HttpResponse {
 function assertCompileError(text: string, kind: string): void {
   case compileRoutePattern(text) {
     s: Success -> Assert.fail("expected pattern compile failure")
+    f: Failure -> Assert.equal(f.error.kind, kind)
+  }
+}
+
+function assertFileSystemPathError(text: string, kind: string): void {
+  case pathToFileSystemPath("/srv/www", path(text)) {
+    s: Success -> Assert.fail("expected filesystem path failure")
     f: Failure -> Assert.equal(f.error.kind, kind)
   }
 }
@@ -95,6 +104,47 @@ export function testPrefixMatchCanBeExact(): void {
   Assert.isTrue(matched != null)
   Assert.equal(matched!.get("id"), "7")
   Assert.equal(matched!.remaining.segmentCount(), 0)
+}
+
+export function testPathToFileSystemPathAppliesUrlPathRelativeToRoot(): void {
+  mapped := try! pathToFileSystemPath("/srv/www", path("/assets/css/site.css"))
+
+  Assert.equal(mapped, "/srv/www/assets/css/site.css")
+}
+
+export function testPathToFileSystemPathIgnoresAbsoluteUrlMarkerAndEmptySegments(): void {
+  mapped := try! pathToFileSystemPath("/srv/www/", path("/assets//icons/"))
+
+  Assert.equal(mapped, "/srv/www/assets/icons")
+}
+
+export function testPathToFileSystemPathRejectsJailbreakSegments(): void {
+  assertFileSystemPathError("/assets/../secret.txt", "parent-segment")
+  assertFileSystemPathError("/assets/%2e%2e/secret.txt", "parent-segment")
+  assertFileSystemPathError("/assets/%2Fetc/passwd", "embedded-separator")
+  assertFileSystemPathError("/assets/%5Cwindows", "embedded-separator")
+}
+
+export function testRouteMatchCanMapRemainingPathToFileSystemPath(): void {
+  matched := matchRoutePrefix(pattern("/static"), path("/static/images/logo.png"))
+
+  Assert.isTrue(matched != null)
+  mapped := try! matched!.remainingFileSystemPath("/srv/www")
+  Assert.equal(mapped, "/srv/www/images/logo.png")
+}
+
+export function testMimeTypeForFileSystemPathUsesCommonExtensions(): void {
+  Assert.equal(mimeTypeForFileSystemPath("/srv/www/index.html")!, "text/html; charset=utf-8")
+  Assert.equal(mimeTypeForFileSystemPath("/srv/www/app.js")!, "text/javascript; charset=utf-8")
+  Assert.equal(mimeTypeForFileSystemPath("/srv/www/data.json")!, "application/json; charset=utf-8")
+  Assert.equal(mimeTypeForFileSystemPath("/srv/www/logo.png")!, "image/png")
+  Assert.equal(mimeTypeForFileSystemPath("/srv/www/font.woff2")!, "font/woff2")
+}
+
+export function testMimeTypeForFileSystemPathIsCaseInsensitiveAndReturnsNullForUnknown(): void {
+  Assert.equal(mimeTypeForFileSystemPath("/srv/www/PHOTO.JPEG")!, "image/jpeg")
+  Assert.isTrue(mimeTypeForFileSystemPath("/srv/www/Makefile") == null)
+  Assert.isTrue(mimeTypeForFileSystemPath("/srv/www/file.unknown") == null)
 }
 
 export function testSlashNormalization(): void {

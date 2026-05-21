@@ -1,4 +1,5 @@
 import { Request, Response } from "std/http-server"
+import { extension, join } from "std/path"
 import { Path, parsePath } from "std/url"
 
 const SEGMENT_LITERAL = 0
@@ -8,6 +9,12 @@ const SEGMENT_WILDCARD = 2
 export class RoutePatternError {
   readonly kind: string
   readonly index: int
+  readonly message: string
+}
+
+export class FileSystemPathError {
+  readonly kind: string
+  readonly segment: int
   readonly message: string
 }
 
@@ -31,6 +38,10 @@ export class RouteMatch {
       panic("Route variable '${name}' is not bound")
     }
     return value
+  }
+
+  remainingFileSystemPath(root: string): Result<string, FileSystemPathError> {
+    return pathToFileSystemPath(root, this.remaining)
   }
 }
 
@@ -228,6 +239,73 @@ export function matchRoutePrefix(pattern: RoutePattern, path: Path): RouteMatch 
   return matched!
 }
 
+export function pathToFileSystemPath(root: string, path: Path): Result<string, FileSystemPathError> {
+  parts: string[] := [root]
+
+  for index of 0..<path.segments.length {
+    segment := path.segments[index]
+    if segment.length == 0 || segment == "." {
+      continue
+    }
+
+    if segment == ".." {
+      return fileSystemPathError(
+        "parent-segment",
+        index,
+        "URL paths cannot contain parent directory segments",
+      )
+    }
+
+    if segment.contains("/") || segment.contains("\\") {
+      return fileSystemPathError(
+        "embedded-separator",
+        index,
+        "URL path segments cannot contain filesystem separators",
+      )
+    }
+
+    parts.push(segment)
+  }
+
+  return Success { value: join(parts) }
+}
+
+export function mimeTypeForFileSystemPath(path: string): string | null {
+  ext := extension(path).toLowerCase()
+  return case ext {
+    ".html" | ".htm" -> "text/html; charset=utf-8",
+    ".css" -> "text/css; charset=utf-8",
+    ".js" | ".mjs" -> "text/javascript; charset=utf-8",
+    ".json" | ".map" -> "application/json; charset=utf-8",
+    ".txt" | ".text" -> "text/plain; charset=utf-8",
+    ".md" | ".markdown" -> "text/markdown; charset=utf-8",
+    ".csv" -> "text/csv; charset=utf-8",
+    ".xml" -> "application/xml; charset=utf-8",
+    ".svg" -> "image/svg+xml",
+    ".png" -> "image/png",
+    ".jpg" | ".jpeg" -> "image/jpeg",
+    ".gif" -> "image/gif",
+    ".webp" -> "image/webp",
+    ".ico" -> "image/x-icon",
+    ".avif" -> "image/avif",
+    ".wasm" -> "application/wasm",
+    ".pdf" -> "application/pdf",
+    ".zip" -> "application/zip",
+    ".gz" -> "application/gzip",
+    ".tar" -> "application/x-tar",
+    ".mp3" -> "audio/mpeg",
+    ".wav" -> "audio/wav",
+    ".ogg" -> "audio/ogg",
+    ".mp4" -> "video/mp4",
+    ".webm" -> "video/webm",
+    ".woff" -> "font/woff",
+    ".woff2" -> "font/woff2",
+    ".ttf" -> "font/ttf",
+    ".otf" -> "font/otf",
+    _ -> null
+  }
+}
+
 function matchCompiled(pattern: RoutePattern, path: Path, allowPrefix: bool): RouteMatch | null {
   params: Map<string, string> := {}
   let segmentIndex = 0
@@ -342,6 +420,16 @@ function patternError(kind: string, index: int, message: string): Result<RoutePa
     error: RoutePatternError {
       kind,
       index,
+      message,
+    }
+  }
+}
+
+function fileSystemPathError(kind: string, segment: int, message: string): Result<string, FileSystemPathError> {
+  return Failure {
+    error: FileSystemPathError {
+      kind,
+      segment,
       message,
     }
   }

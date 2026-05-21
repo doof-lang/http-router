@@ -47,3 +47,36 @@ a prefix; the handler receives a `RouteMatch` whose `remaining` path has that
 prefix removed. `Router.handle(request)` accepts either a `std/http-server`
 `Request` or a router `HttpRequest`, and returns `HttpResponse | null` when no
 route matches.
+
+## Filesystem paths
+
+Use `pathToFileSystemPath(root, path)` to safely apply a URL `Path` relative to
+a filesystem root. It returns `Result<string, FileSystemPathError>` and rejects
+decoded parent traversal (`..`) and decoded filesystem separators before joining
+the path parts.
+
+```doof
+import { pathToFileSystemPath } from "std/http-router"
+import { parsePath } from "std/url"
+
+path := try! parsePath("/assets/site.css")
+filePath := try! pathToFileSystemPath("/srv/www", path)
+```
+
+For prefix routes, `RouteMatch.remainingFileSystemPath(root)` maps the
+remaining subpath:
+
+```doof
+router := Router()
+  .route("/static", (match: RouteMatch, request: HttpRequest): HttpResponse => {
+    filePath := try! match.remainingFileSystemPath("/srv/www")
+    return Response.text(200, filePath)
+  })
+```
+
+`mimeTypeForFileSystemPath(path)` looks up a common MIME type by filesystem
+extension and returns `string | null`:
+
+```doof
+contentType := mimeTypeForFileSystemPath(filePath) ?? "application/octet-stream"
+```

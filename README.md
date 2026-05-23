@@ -27,14 +27,14 @@ helper uses this prefix behavior for catch-all routing.
 ## Fluent router
 
 ```doof
-import { Router, RouteMatch, HttpRequest, HttpResponse } from "std/http-router"
-import { Response } from "std/http-server"
+import { Router, RouteMatch, HttpResponse } from "std/http-router"
+import { Request, Response } from "std/http-server"
 
 router := Router()
-  .get("/news", (match: RouteMatch, request: HttpRequest): HttpResponse => {
+  .get("/news", (match: RouteMatch, request: Request): HttpResponse => {
     return Response.text(200, "Latest news")
   })
-  .route("/api/:version", (match: RouteMatch, request: HttpRequest): HttpResponse => {
+  .route("/api/:version", (match: RouteMatch, request: Request): HttpResponse => {
     return Response.text(200, match.remaining.segment(0))
   })
 ```
@@ -42,10 +42,17 @@ router := Router()
 Verb helpers match the whole request path and require the corresponding HTTP
 method. `route(pattern, handler)` matches any method and applies the pattern as
 a prefix; the handler receives a `RouteMatch` whose `remaining` path has that
-prefix removed. `Router.handle(request)` accepts either a `std/http-server`
-`Request` or a router `HttpRequest`. It returns `null` when no route path
-matches, and returns a `405 Method Not Allowed` response with an `Allow` header
-when the path matches but the request method does not.
+prefix removed. `Router.handle(request)` accepts a `std/http-server.Request`.
+It returns `null` when no route path matches, and returns a `405 Method Not
+Allowed` response with an `Allow` header when the path matches but the request
+method does not.
+
+WebSocket routes use `.websocket(path, handler)` and only match requests with
+`Upgrade: websocket` plus a `Connection` header containing the `upgrade` token.
+Normal HTTP routes do not match websocket upgrade attempts. A websocket handler
+can return either a `Response` or a `WebSocketConnection`; when it returns a
+connection, the router calls `Request.upgradeToWebSocket(connection)` and
+returns `null`.
 
 ## Filesystem paths
 
@@ -67,7 +74,7 @@ remaining subpath:
 
 ```doof
 router := Router()
-  .route("/static", (match: RouteMatch, request: HttpRequest): HttpResponse => {
+  .route("/static", (match: RouteMatch, request: Request): HttpResponse => {
     filePath := try! match.remainingFileSystemPath("/srv/www")
     return Response.text(200, filePath)
   })

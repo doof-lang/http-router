@@ -1,4 +1,4 @@
-import { Request, Response } from "std/http-server"
+import { Request, Response, WebSocketConnection } from "std/http-server"
 import { HttpHeader } from "std/http"
 import { extension, join } from "std/path"
 import { Path, parsePath } from "std/url"
@@ -44,20 +44,17 @@ export class RouteMatch {
   }
 }
 
-export class HttpRequest {
-  readonly method: string
-  readonly path: string
-  readonly serverRequest: Request | null = null
-}
-
 export type HttpResponse = Response
-export type RouteHandler = (it: RouteMatch, request: HttpRequest): HttpResponse
+export type RouteHandler = (it: RouteMatch, request: Request): HttpResponse
+export type WebSocketRouteResult = Response | WebSocketConnection
+export type WebSocketRouteHandler = (it: RouteMatch, request: Request): Response | WebSocketConnection
 
 export class RegisteredRoute {
   readonly method: string | null
   readonly pattern: RoutePattern
   readonly prefix: bool
-  readonly handler: RouteHandler
+  readonly websocket: bool
+  readonly handler: (it: RouteMatch, request: Request): Response | WebSocketConnection
 }
 
 export class Router {
@@ -99,13 +96,17 @@ export class Router {
     return this.add("PATCH", pattern, false, handler)
   }
 
+  websocket(pattern: string, handler: WebSocketRouteHandler): Router {
+    return this.addWebSocket(pattern, handler)
+  }
+
   route(pattern: string, handler: RouteHandler): Router {
     return this.add(null, pattern, true, handler)
   }
 
-  handle(request: Request | HttpRequest): HttpResponse | null {
-    routedRequest := routerRequest(request)
-    parsed := parsePath(routedRequest.path)
+  handle(request: Request): HttpResponse | null {
+    isWebSocketUpgrade := request.isWebSocketUpgrade()
+    parsed := parsePath(request.path)
     path := case parsed {
       s: Success -> s.value,
       _: Failure -> null,
@@ -123,14 +124,29 @@ export class Router {
         continue
       }
 
-      if route.method != null && route.method! != routedRequest.method {
+      if route.websocket {
+        if !isWebSocketUpgrade {
+          continue
+        }
+      } else if isWebSocketUpgrade {
+        continue
+      }
+
+      if route.method != null && route.method! != request.method {
         if !allowedMethods.contains(route.method!) {
           allowedMethods.push(route.method!)
         }
         continue
       }
 
-      return route.handler(matched!, routedRequest)
+      response := route.handler(matched!, request)
+      case response {
+        http: Response -> return http
+        websocket: WebSocketConnection -> {
+          request.upgradeToWebSocket(websocket)
+          return null
+        }
+      }
     }
 
     if allowedMethods.length > 0 {
@@ -147,6 +163,20 @@ export class Router {
       method,
       pattern: compiled,
       prefix,
+      websocket: false,
+      handler: (it: RouteMatch, request: Request): Response | WebSocketConnection => handler(it, request),
+    })
+    return this
+  }
+
+  private addWebSocket(pattern: string, handler: WebSocketRouteHandler): Router {
+    compiled := compileRoutePatternOrPanic(pattern)
+
+    this.routes.push(RegisteredRoute {
+      method: null,
+      pattern: compiled,
+      prefix: false,
+      websocket: true,
       handler,
     })
     return this
@@ -157,17 +187,6 @@ function compileRoutePatternOrPanic(pattern: string): RoutePattern {
   case compileRoutePattern(pattern) {
     s: Success -> return s.value
     f: Failure -> panic("Invalid route pattern '${pattern}': ${f.error.message}")
-  }
-}
-
-function routerRequest(request: Request | HttpRequest): HttpRequest {
-  return case request {
-    routed: HttpRequest -> routed,
-    server: Request -> HttpRequest {
-      method: server.method,
-      path: server.path,
-      serverRequest: server,
-    },
   }
 }
 
@@ -369,6 +388,7 @@ function joinMethods(methods: readonly string[]): string {
   }
   return text
 }
+
 
 function normalizedSegments(pattern: string): readonly string[] {
   let start = 0

@@ -1,12 +1,26 @@
 import { Assert } from "std/assert"
-import { Response } from "std/http-server"
+import { AsyncEventChannel, createMainAsyncEventChannel, runMainEventLoop } from "std/event"
+import { HttpHeader } from "std/http"
+import {
+  Request,
+  Response,
+  Server,
+  ServerOptions,
+  WebSocketConnection,
+  WebSocketBinary,
+  WebSocketClose,
+  WebSocketError,
+  WebSocketOpen,
+  WebSocketText,
+  WebSocketWritable,
+} from "std/http-server"
 import { Path, parsePath } from "std/url"
 import {
-  HttpRequest,
   HttpResponse,
   Router,
   RouteMatch,
   RoutePattern,
+  WebSocketRouteResult,
   compileRoutePattern,
   matchRoute,
   matchRoutePrefix,
@@ -14,12 +28,46 @@ import {
   pathToFileSystemPath,
 } from "../index"
 
+import class NativeWebSocketTestClient from "http-server/native_http_server_test_support.hpp" as doof_http_server_test::NativeWebSocketTestClient {
+  static startExchangeText(host: string, port: int, requestText: string, text: string): NativeWebSocketTestClient
+  wait(): string
+}
+
+class RouterWebSocketState {
+  openCount: int = 0
+  text: string = ""
+  errorKind: string = ""
+}
+
 function path(text: string): Path => try! parsePath(text)
 
 function pattern(text: string): RoutePattern => try! compileRoutePattern(text)
 
-function request(method: string, path: string): HttpRequest {
-  return HttpRequest { method, path }
+function request(method: string, path: string): Request {
+  return Request {
+    method,
+    target: path,
+    path,
+    queryString: "",
+    version: "HTTP/1.1",
+    headers: readonly [],
+    body: readonly [],
+  }
+}
+
+function websocketRequest(path: string): Request {
+  return Request {
+    method: "GET",
+    target: path,
+    path,
+    queryString: "",
+    version: "HTTP/1.1",
+    headers: readonly [
+      HttpHeader { name: "Upgrade", value: "websocket" },
+      HttpHeader { name: "Connection", value: "keep-alive, Upgrade" },
+    ],
+    body: readonly [],
+  }
 }
 
 function text(status: int, body: string): HttpResponse {
@@ -28,6 +76,45 @@ function text(status: int, body: string): HttpResponse {
 
 function empty(status: int): HttpResponse {
   return Response.empty(status)
+}
+
+function handleRouterWebSocketEvent(
+  state: RouterWebSocketState,
+  event: WebSocketOpen | WebSocketText | WebSocketBinary | WebSocketWritable | WebSocketClose | WebSocketError,
+): void {
+  opened := event as WebSocketOpen
+  case opened {
+    _: Success -> {
+      state.openCount += 1
+      return
+    }
+    _: Failure -> {}
+  }
+
+  textEvent := event as WebSocketText
+  case textEvent {
+    textSuccess: Success -> {
+      state.text = textSuccess.value.text
+      try! textSuccess.value.connection.sendText("echo:" + textSuccess.value.text)
+      return
+    }
+    _: Failure -> {}
+  }
+
+  errorEvent := event as WebSocketError
+  case errorEvent {
+    errorSuccess: Success -> {
+      state.errorKind = errorSuccess.value.error.kind
+      return
+    }
+    _: Failure -> {}
+  }
+}
+
+function websocketConnection(state: RouterWebSocketState): WebSocketConnection {
+  return WebSocketConnection {
+    handler: (event): void => handleRouterWebSocketEvent(state, event),
+  }
 }
 
 function assertCompileError(text: string, kind: string): void {
@@ -173,7 +260,7 @@ export function testInvalidPatternsAreRejected(): void {
 
 export function testRouterGetMatchesExactPathAndMethod(): void {
   router := Router()
-    .get("/news", (match: RouteMatch, request: HttpRequest): HttpResponse => text(200, "news"))
+    .get("/news", (match: RouteMatch, request: Request): HttpResponse => text(200, "news"))
 
   matched := router.handle(request("GET", "/news"))
   wrongMethod := router.handle(request("POST", "/news"))
@@ -188,14 +275,14 @@ export function testRouterGetMatchesExactPathAndMethod(): void {
 
 export function testRouterSupportsExpectedVerbHelpers(): void {
   router := Router()
-    .head("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(200))
-    .post("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(201))
-    .put("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(202))
-    .delete("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(203))
-    .connect("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(204))
-    .options("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(205))
-    .trace("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(206))
-    .patch("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(207))
+    .head("/items", (match: RouteMatch, request: Request): HttpResponse => empty(200))
+    .post("/items", (match: RouteMatch, request: Request): HttpResponse => empty(201))
+    .put("/items", (match: RouteMatch, request: Request): HttpResponse => empty(202))
+    .delete("/items", (match: RouteMatch, request: Request): HttpResponse => empty(203))
+    .connect("/items", (match: RouteMatch, request: Request): HttpResponse => empty(204))
+    .options("/items", (match: RouteMatch, request: Request): HttpResponse => empty(205))
+    .trace("/items", (match: RouteMatch, request: Request): HttpResponse => empty(206))
+    .patch("/items", (match: RouteMatch, request: Request): HttpResponse => empty(207))
 
   Assert.equal(router.handle(request("HEAD", "/items"))!.status, 200)
   Assert.equal(router.handle(request("POST", "/items"))!.status, 201)
@@ -207,10 +294,111 @@ export function testRouterSupportsExpectedVerbHelpers(): void {
   Assert.equal(router.handle(request("PATCH", "/items"))!.status, 207)
 }
 
+export function testRequestDetectsWebSocketUpgradeAttempts(): void {
+  upgrade := websocketRequest("/socket")
+  ordinary := Request {
+    method: "GET",
+    target: "/socket",
+    path: "/socket",
+    queryString: "",
+    version: "HTTP/1.1",
+    headers: readonly [
+      HttpHeader { name: "Connection", value: "upgrade" },
+    ],
+    body: readonly [],
+  }
+
+  Assert.isTrue(upgrade.isWebSocketUpgrade())
+  Assert.isFalse(ordinary.isWebSocketUpgrade())
+}
+
+export function testRouterWebSocketRouteOnlyMatchesUpgradeAttempts(): void {
+  router := Router()
+    .websocket("/socket", (match: RouteMatch, request: Request): WebSocketRouteResult => text(426, "upgrade required"))
+
+  ordinary := router.handle(request("GET", "/socket"))
+  upgrade := router.handle(websocketRequest("/socket"))
+
+  Assert.isTrue(ordinary == null)
+  Assert.isTrue(upgrade != null)
+  Assert.equal(upgrade!.status, 426)
+}
+
+export function testRouterGetDoesNotMatchWebSocketUpgradeAttempts(): void {
+  router := Router()
+    .get("/socket", (match: RouteMatch, request: Request): HttpResponse => text(200, "ordinary get"))
+    .websocket("/socket", (match: RouteMatch, request: Request): WebSocketRouteResult => text(426, "upgrade required"))
+
+  matched := router.handle(websocketRequest("/socket"))
+
+  Assert.isTrue(matched != null)
+  Assert.equal(matched!.status, 426)
+}
+
+export function testRouterReturnsNullForWebSocketUpgradeWithoutWebSocketRoute(): void {
+  router := Router()
+    .get("/socket", (match: RouteMatch, request: Request): HttpResponse => text(200, "ordinary get"))
+
+  Assert.isTrue(router.handle(websocketRequest("/socket")) == null)
+}
+
+export function testRouterWebSocketRouteCanReturnConnection(): void {
+  state := RouterWebSocketState()
+  router := Router()
+    .websocket("/socket", (match: RouteMatch, request: Request): WebSocketRouteResult => websocketConnection(state))
+
+  matched := router.handle(websocketRequest("/socket"))
+
+  Assert.isTrue(matched == null)
+  Assert.equal(state.errorKind, "missing-responder")
+}
+
+export function testRouterWebSocketConnectionReturnUpgradesServerRequest(): void {
+  state := RouterWebSocketState()
+  router := Router()
+    .get("/socket", (match: RouteMatch, request: Request): HttpResponse => text(200, "ordinary get"))
+    .websocket("/socket", (match: RouteMatch, request: Request): WebSocketRouteResult => websocketConnection(state))
+  let requestChannel: AsyncEventChannel<Request> | null = null
+
+  requests := createMainAsyncEventChannel<Request>{
+    handler: (request: Request): void => {
+      response := router.handle(request)
+      if response != null {
+        try! request.respond(response!)
+      }
+      try! requestChannel!.close()
+    },
+    capacity: 1,
+    keepsAlive: true,
+  }
+  requestChannel = requests
+
+  server := try! Server.listen{
+    options: ServerOptions { port: 0 },
+    requests,
+  }
+
+  client := NativeWebSocketTestClient.startExchangeText(
+    server.host,
+    server.port,
+    "GET /socket HTTP/1.1\r\nHost: example.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+    "hello",
+  )
+
+  runMainEventLoop()
+  clientResponse := client.wait()
+  try! server.close()
+
+  Assert.equal(state.openCount, 1, clientResponse)
+  Assert.equal(state.text, "hello", clientResponse)
+  Assert.isTrue(clientResponse.contains("HTTP/1.1 101 Switching Protocols"), clientResponse)
+  Assert.isTrue(clientResponse.contains("frame|1|echo:hello"), clientResponse)
+}
+
 export function testRouterUsesFirstRegisteredMatch(): void {
   router := Router()
-    .get("/items/:id", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(201))
-    .get("/items/:id", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(202))
+    .get("/items/:id", (match: RouteMatch, request: Request): HttpResponse => empty(201))
+    .get("/items/:id", (match: RouteMatch, request: Request): HttpResponse => empty(202))
 
   matched := router.handle(request("GET", "/items/42"))
 
@@ -220,15 +408,15 @@ export function testRouterUsesFirstRegisteredMatch(): void {
 
 export function testRouterReturnsNullWhenNothingMatches(): void {
   router := Router()
-    .get("/news", (match: RouteMatch, request: HttpRequest): HttpResponse => text(200, "news"))
+    .get("/news", (match: RouteMatch, request: Request): HttpResponse => text(200, "news"))
 
   Assert.isTrue(router.handle(request("GET", "/missing")) == null)
 }
 
 export function testRouterReturnsMethodNotAllowedForTerminatingMethodMismatch(): void {
   router := Router()
-    .get("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(200))
-    .post("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(201))
+    .get("/items", (match: RouteMatch, request: Request): HttpResponse => empty(200))
+    .post("/items", (match: RouteMatch, request: Request): HttpResponse => empty(201))
 
   matched := router.handle(request("PUT", "/items"))
 
@@ -241,8 +429,8 @@ export function testRouterReturnsMethodNotAllowedForTerminatingMethodMismatch():
 
 export function testRouterKeepsScanningAfterMethodMismatch(): void {
   router := Router()
-    .get("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(200))
-    .route("/items", (match: RouteMatch, request: HttpRequest): HttpResponse => empty(202))
+    .get("/items", (match: RouteMatch, request: Request): HttpResponse => empty(200))
+    .route("/items", (match: RouteMatch, request: Request): HttpResponse => empty(202))
 
   matched := router.handle(request("PUT", "/items"))
 
@@ -252,7 +440,7 @@ export function testRouterKeepsScanningAfterMethodMismatch(): void {
 
 export function testRouterRouteMatchesAnyMethodAsPrefix(): void {
   router := Router()
-    .route("/api/:version", (match: RouteMatch, request: HttpRequest): HttpResponse => {
+    .route("/api/:version", (match: RouteMatch, request: Request): HttpResponse => {
       version := match.get("version")
       firstRemaining := match.remaining.segment(0)
       if request.method == "PATCH" && version == "v1" && firstRemaining == "users" {
@@ -269,7 +457,7 @@ export function testRouterRouteMatchesAnyMethodAsPrefix(): void {
 
 export function testRouterRouteCanMatchExactPrefix(): void {
   router := Router()
-    .route("/api", (match: RouteMatch, request: HttpRequest): HttpResponse => {
+    .route("/api", (match: RouteMatch, request: Request): HttpResponse => {
       remainingCount := match.remaining.segmentCount()
       if remainingCount == 0 {
         return empty(210)
@@ -285,7 +473,7 @@ export function testRouterRouteCanMatchExactPrefix(): void {
 
 export function testRouterReturnsNullForInvalidRequestPath(): void {
   router := Router()
-    .get("/news", (match: RouteMatch, request: HttpRequest): HttpResponse => text(200, "news"))
+    .get("/news", (match: RouteMatch, request: Request): HttpResponse => text(200, "news"))
 
   Assert.isTrue(router.handle(request("GET", "/news/%")) == null)
 }

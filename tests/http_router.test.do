@@ -1,5 +1,5 @@
 import { Assert } from "std/assert"
-import { AsyncEventChannel, createMainAsyncEventChannel, runMainEventLoop } from "std/event"
+import { ChannelSender, createChannel, runMainEventLoop } from "std/event"
 import { HttpHeader } from "std/http"
 import {
   Request,
@@ -358,19 +358,19 @@ export function testRouterWebSocketConnectionReturnUpgradesServerRequest(): void
   router := Router()
     .get("/socket", (match: RouteMatch, request: Request): HttpResponse => text(200, "ordinary get"))
     .websocket("/socket", (match: RouteMatch, request: Request): WebSocketRouteResult => websocketConnection(state))
-  let requestChannel: AsyncEventChannel<Request> | null = null
+  let requestChannel: ChannelSender<Request> | null = null
 
-  requests := createMainAsyncEventChannel<Request>{
-    handler: (request: Request): void => {
-      response := router.handle(request)
-      if response != null {
-        try! request.respond(response!)
-      }
-      try! requestChannel!.close()
-    },
+  (requests, requestReceiver) := createChannel<Request>{
     capacity: 1,
     keepsAlive: true,
   }
+  requestReceiver.onMessage((request: Request): void => {
+    response := router.handle(request)
+    if response != null {
+      try! request.respond(response!)
+    }
+    requestChannel!.close()
+  })
   requestChannel = requests
 
   server := try! Server.listen{

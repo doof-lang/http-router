@@ -370,10 +370,11 @@ function methodNotAllowedResponse(methods: readonly string[]): HttpResponse {
     name: "Allow",
     value: joinMethods(methods),
   })
+  body: readonly byte[] := readonly []
   return Response {
     status: 405,
     headers: headers.buildReadonly(),
-    body: readonly [],
+    body
   }
 }
 

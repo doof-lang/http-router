@@ -42,10 +42,24 @@ router := Router()
 Verb helpers match the whole request path and require the corresponding HTTP
 method. `route(pattern, handler)` matches any method and applies the pattern as
 a prefix; the handler receives a `RouteMatch` whose `remaining` path has that
-prefix removed. `Router.handle(request)` accepts a `std/http-server.Request`.
-It returns `null` when no route path matches, and returns a `405 Method Not
-Allowed` response with an `Allow` header when the path matches but the request
-method does not.
+prefix removed. `getPrefix(pattern, handler)` and `headPrefix(pattern, handler)`
+are method-specific prefix routes, which is useful for static file serving.
+`Router.handle(request)` accepts a `std/http-server.Request`. It returns `null`
+when no route path matches, and returns a `405 Method Not Allowed` response with
+an `Allow` header when the path matches but the request method does not.
+
+Static file serving can be mounted as a method-specific prefix route:
+
+```doof
+router := Router()
+  .staticFiles("/", StaticFileOptions {
+    root: documentRoot,
+  })
+```
+
+Static file responses support `GET` and `HEAD`, include `Content-Type`,
+`Cache-Control`, `ETag`, and `Last-Modified` headers, and return `304 Not
+Modified` for matching `If-None-Match` or `If-Modified-Since` requests.
 
 WebSocket routes use `.websocket(path, handler)` and only match requests with
 `Upgrade: websocket` plus a `Connection` header containing the `upgrade` token.
@@ -86,3 +100,18 @@ extension and returns `string | null`:
 ```doof
 contentType := mimeTypeForFileSystemPath(filePath) ?? "application/octet-stream"
 ```
+
+`cacheControlForFileSystemPath(path)` returns conservative cache defaults for
+common static assets, and `fileSystemResponseHeaders(path)` combines MIME and
+cache headers:
+
+```doof
+headers := fileSystemResponseHeaders(
+  filePath,
+  mimeTypeForFileSystemPath(filePath) ?? "application/octet-stream",
+)
+```
+
+`fileSystemETag(size, modifiedAt)` builds the validator used by static file
+serving from filesystem metadata. `httpDate(epochSeconds)` formats Unix seconds
+for HTTP headers.

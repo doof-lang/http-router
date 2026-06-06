@@ -1,5 +1,6 @@
 import { Assert } from "std/assert"
 import { ChannelSender, createChannel, runMainEventLoop } from "std/event"
+import { remove, writeText } from "std/fs"
 import { HttpHeader } from "std/http"
 import {
   Request,
@@ -20,8 +21,11 @@ import {
   Router,
   RouteMatch,
   RoutePattern,
+  StaticFileOptions,
   WebSocketRouteResult,
+  cacheControlForFileSystemPath,
   compileRoutePattern,
+  fileSystemResponseHeaders,
   matchRoute,
   matchRoutePrefix,
   mimeTypeForFileSystemPath,
@@ -76,6 +80,28 @@ function text(status: int, body: string): HttpResponse {
 
 function empty(status: int): HttpResponse {
   return Response.empty(status)
+}
+
+function header(response: Response, name: string): string | null {
+  lowerName := name.toLowerCase()
+  for entry of response.headers {
+    if entry.name.toLowerCase() == lowerName {
+      return entry.value
+    }
+  }
+  return null
+}
+
+function requestWithHeaders(method: string, path: string, headers: readonly HttpHeader[]): Request {
+  return Request {
+    method,
+    target: path,
+    path,
+    queryString: "",
+    version: "HTTP/1.1",
+    headers,
+    body: readonly [],
+  }
 }
 
 function handleRouterWebSocketEvent(
@@ -226,6 +252,36 @@ export function testMimeTypeForFileSystemPathIsCaseInsensitiveAndReturnsNullForU
   Assert.isTrue(mimeTypeForFileSystemPath("/srv/www/file.unknown") == null)
 }
 
+export function testCacheControlForFileSystemPathUsesStaticAssetDefaults(): void {
+  Assert.equal(cacheControlForFileSystemPath("/srv/www/index.html")!, "no-cache")
+  Assert.equal(cacheControlForFileSystemPath("/srv/www/assets/app.js")!, "public, max-age=3600")
+  Assert.equal(cacheControlForFileSystemPath("/srv/www/assets/logo.png")!, "public, max-age=86400")
+  Assert.equal(cacheControlForFileSystemPath("/srv/www/assets/font.woff2")!, "public, max-age=31536000, immutable")
+  Assert.isTrue(cacheControlForFileSystemPath("/srv/www/Makefile") == null)
+}
+
+export function testFileSystemResponseHeadersIncludesMimeTypeAndCacheControl(): void {
+  headers := fileSystemResponseHeaders("/srv/www/assets/app.js")
+
+  Assert.equal(headers.length, 2)
+  Assert.equal(headers[0].name, "Content-Type")
+  Assert.equal(headers[0].value, "text/javascript; charset=utf-8")
+  Assert.equal(headers[1].name, "Cache-Control")
+  Assert.equal(headers[1].value, "public, max-age=3600")
+}
+
+export function testFileSystemResponseHeadersAllowsOverrides(): void {
+  headers := fileSystemResponseHeaders(
+    "/srv/www/assets/app.bin",
+    "application/example",
+    "private, max-age=5",
+  )
+
+  Assert.equal(headers.length, 2)
+  Assert.equal(headers[0].value, "application/example")
+  Assert.equal(headers[1].value, "private, max-age=5")
+}
+
 export function testSlashNormalization(): void {
   a := pattern("users/:id")
   b := pattern("/users/:id")
@@ -271,6 +327,59 @@ export function testRouterGetMatchesExactPathAndMethod(): void {
   Assert.isTrue(wrongMethod != null)
   Assert.equal(wrongMethod!.status, 405)
   Assert.isTrue(trailing == null)
+}
+
+export function testRouterMethodPrefixRoutesMatchSubpathsAndReturnMethodNotAllowed(): void {
+  router := Router()
+    .getPrefix("/", (match: RouteMatch, request: Request): HttpResponse => text(200, match.remaining.segment(0)))
+    .headPrefix("/", (match: RouteMatch, request: Request): HttpResponse => empty(200))
+
+  matched := router.handle(request("GET", "/assets/site.css"))
+  wrongMethod := router.handle(request("POST", "/assets/site.css"))
+
+  Assert.isTrue(matched != null)
+  Assert.equal(matched!.status, 200)
+  Assert.isTrue(wrongMethod != null)
+  Assert.equal(wrongMethod!.status, 405)
+  Assert.equal(wrongMethod!.headers[0].value, "GET, HEAD")
+}
+
+export function testRouterStaticFilesServesGetHeadAndConditionals(): void {
+  root := "."
+  filePath := root + "/.http-router-static.css"
+  try! writeText(filePath, "static body")
+
+  router := Router()
+    .staticFiles("/", StaticFileOptions { root })
+
+  getResponse := router.handle(request("GET", "/.http-router-static.css"))!
+  headResponse := router.handle(request("HEAD", "/.http-router-static.css"))!
+  postResponse := router.handle(request("POST", "/.http-router-static.css"))!
+  etag := header(getResponse, "ETag")!
+  lastModified := header(getResponse, "Last-Modified")!
+  etagNotModified := router.handle(requestWithHeaders(
+    "GET",
+    "/.http-router-static.css",
+    readonly [HttpHeader { name: "If-None-Match", value: etag }],
+  ))!
+  dateNotModified := router.handle(requestWithHeaders(
+    "GET",
+    "/.http-router-static.css",
+    readonly [HttpHeader { name: "If-Modified-Since", value: lastModified }],
+  ))!
+
+  try! remove(filePath)
+
+  Assert.equal(getResponse.status, 200)
+  Assert.equal(header(getResponse, "Content-Type")!, "text/css; charset=utf-8")
+  Assert.equal(header(getResponse, "Cache-Control")!, "public, max-age=3600")
+  Assert.isTrue(etag.startsWith("\""))
+  Assert.isTrue(lastModified.endsWith(" GMT"))
+  Assert.equal(headResponse.status, 200)
+  Assert.equal(postResponse.status, 405)
+  Assert.equal(header(postResponse, "Allow")!, "GET, HEAD")
+  Assert.equal(etagNotModified.status, 304)
+  Assert.equal(dateNotModified.status, 304)
 }
 
 export function testRouterSupportsExpectedVerbHelpers(): void {

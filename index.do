@@ -1,6 +1,8 @@
 import { Request, Response, WebSocketConnection } from "std/http-server"
+import { EntryKind, metadata, readBlob } from "std/fs"
 import { HttpHeader } from "std/http"
 import { extension, join } from "std/path"
+import { Instant } from "std/time"
 import { Path, parsePath } from "std/url"
 
 const SEGMENT_LITERAL = 0
@@ -49,6 +51,12 @@ export type RouteHandler = (it: RouteMatch, request: Request): HttpResponse
 export type WebSocketRouteResult = Response | WebSocketConnection
 export type WebSocketRouteHandler = (it: RouteMatch, request: Request): Response | WebSocketConnection
 
+export class StaticFileOptions {
+  readonly root: string
+  readonly indexFile: string = "index.html"
+  readonly fallbackContentType: string = "application/octet-stream"
+}
+
 export class RegisteredRoute {
   readonly method: string | null
   readonly pattern: RoutePattern
@@ -64,8 +72,16 @@ export class Router {
     return this.add("GET", pattern, false, handler)
   }
 
+  getPrefix(pattern: string, handler: RouteHandler): Router {
+    return this.add("GET", pattern, true, handler)
+  }
+
   head(pattern: string, handler: RouteHandler): Router {
     return this.add("HEAD", pattern, false, handler)
+  }
+
+  headPrefix(pattern: string, handler: RouteHandler): Router {
+    return this.add("HEAD", pattern, true, handler)
   }
 
   post(pattern: string, handler: RouteHandler): Router {
@@ -102,6 +118,13 @@ export class Router {
 
   route(pattern: string, handler: RouteHandler): Router {
     return this.add(null, pattern, true, handler)
+  }
+
+  staticFiles(pattern: string, options: StaticFileOptions): Router {
+    handler := staticFileHandler(options)
+    this.getPrefix(pattern, handler)
+    this.headPrefix(pattern, handler)
+    return this
   }
 
   handle(request: Request): HttpResponse | null {
@@ -325,6 +348,159 @@ export function mimeTypeForFileSystemPath(path: string): string | null {
     ".otf" -> "font/otf",
     _ -> null
   }
+}
+
+export function cacheControlForFileSystemPath(path: string): string | null {
+  ext := extension(path).toLowerCase()
+  return case ext {
+    ".html" | ".htm" -> "no-cache",
+    ".css" | ".js" | ".mjs" | ".json" | ".map" | ".wasm" -> "public, max-age=3600",
+    ".svg" | ".png" | ".jpg" | ".jpeg" | ".gif" | ".webp" | ".ico" | ".avif" -> "public, max-age=86400",
+    ".woff" | ".woff2" | ".ttf" | ".otf" -> "public, max-age=31536000, immutable",
+    _ -> null
+  }
+}
+
+export function fileSystemResponseHeaders(
+  path: string,
+  contentType: string | null = null,
+  cacheControl: string | null = null,
+): readonly HttpHeader[] {
+  headers: HttpHeader[] := []
+  resolvedContentType := contentType ?? mimeTypeForFileSystemPath(path)
+  if resolvedContentType != null {
+    headers.push(HttpHeader {
+      name: "Content-Type",
+      value: resolvedContentType!,
+    })
+  }
+
+  resolvedCacheControl := cacheControl ?? cacheControlForFileSystemPath(path)
+  if resolvedCacheControl != null {
+    headers.push(HttpHeader {
+      name: "Cache-Control",
+      value: resolvedCacheControl!,
+    })
+  }
+
+  return headers.buildReadonly()
+}
+
+export function fileSystemETag(size: long, modifiedAt: Instant): string {
+  return "\"${size}-${modifiedAt.toEpochNanos()}\""
+}
+
+export function httpDate(epochSeconds: long): string {
+  return Instant.ofEpochSeconds(epochSeconds).toHttpDate()
+}
+
+export function staticFileHandler(options: StaticFileOptions): RouteHandler {
+  return (match: RouteMatch, request: Request): HttpResponse => serveStaticFile(options, match, request)
+}
+
+function serveStaticFile(options: StaticFileOptions, match: RouteMatch, request: Request): HttpResponse {
+  filePath := staticFilePathFor(options, match, request.path) else {
+    return Response.text(400, "bad request\n")
+  }
+
+  fileMetadata := metadata(filePath) else {
+    return Response.text(404, "not found\n")
+  }
+  if fileMetadata.kind != EntryKind.File {
+    return Response.text(404, "not found\n")
+  }
+
+  etag := fileSystemETag(fileMetadata.size, fileMetadata.modifiedAt)
+  lastModified := fileMetadata.modifiedAt.toHttpDate()
+  headers := staticFileHeaders(filePath, options.fallbackContentType, etag, lastModified)
+
+  if isNotModified(request, etag, fileMetadata.modifiedAt) {
+    body: readonly byte[] := readonly []
+    return Response {
+      status: 304,
+      headers,
+      body,
+    }
+  }
+
+  if request.method == "HEAD" {
+    body: readonly byte[] := readonly []
+    return Response {
+      status: 200,
+      headers,
+      body,
+    }
+  }
+
+  return case readBlob(filePath) {
+    s: Success -> Response.blob(200, s.value, headers),
+    _: Failure -> Response.text(404, "not found\n"),
+  }
+}
+
+function staticFilePathFor(options: StaticFileOptions, match: RouteMatch, requestPath: string): Result<string, FileSystemPathError> {
+  try let path = match.remainingFileSystemPath(options.root)
+  if match.remaining.segmentCount() == 0 || requestPath.endsWith("/") {
+    return Success { value: join([path, options.indexFile]) }
+  }
+
+  pathMetadata := metadata(path) else {
+    return Success { value: path }
+  }
+  if pathMetadata.kind == EntryKind.Directory {
+    return Success { value: join([path, options.indexFile]) }
+  }
+
+  return Success { value: path }
+}
+
+function staticFileHeaders(path: string, fallbackContentType: string, etag: string, lastModified: string): readonly HttpHeader[] {
+  headers: HttpHeader[] := []
+  base := fileSystemResponseHeaders(path, mimeTypeForFileSystemPath(path) ?? fallbackContentType)
+  for header of base {
+    headers.push(header)
+  }
+  headers.push(HttpHeader { name: "ETag", value: etag })
+  headers.push(HttpHeader { name: "Last-Modified", value: lastModified })
+  return headers.buildReadonly()
+}
+
+function isNotModified(request: Request, etag: string, modifiedAt: Instant): bool {
+  ifNoneMatch := request.header("If-None-Match")
+  if ifNoneMatch != null {
+    return etagListContains(ifNoneMatch!, etag)
+  }
+
+  ifModifiedSince := request.header("If-Modified-Since") else {
+    return false
+  }
+  since := Instant.parseHttpDate(ifModifiedSince) else {
+    return false
+  }
+  return modifiedAt.isAfter(since)
+}
+
+function etagListContains(value: string, etag: string): bool {
+  let remaining = value
+  while true {
+    separator := remaining.indexOf(",")
+    let part = remaining
+    if separator >= 0 {
+      part = remaining.substring(0, separator)
+      remaining = remaining.slice(separator + 1)
+    } else {
+      remaining = ""
+    }
+
+    token := part.trim()
+    if token == "*" || token == etag || token == "W/" + etag {
+      return true
+    }
+    if remaining == "" {
+      break
+    }
+  }
+  return false
 }
 
 function matchCompiled(pattern: RoutePattern, path: Path, allowPrefix: bool): RouteMatch | null {

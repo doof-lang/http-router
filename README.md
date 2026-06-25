@@ -24,6 +24,11 @@ panics if the name is missing. `matchRoutePrefix` returns a relative
 `remaining` path for sub-routing; the fluent router's `route(pattern, handler)`
 helper uses this prefix behavior for catch-all routing.
 
+## Documentation
+
+- [Guide and API reference](docs/API.md) explains pattern matching, prefix routes, method handling, WebSocket routes, static files, and safe filesystem mapping.
+- Tests can be run with `doof test http-router`.
+
 ## Fluent router
 
 ```doof

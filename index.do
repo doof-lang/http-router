@@ -5,8 +5,8 @@ import { extension, join } from "std/path"
 import { Instant } from "std/time"
 import { Path, parsePath } from "std/url"
 
-const SEGMENT_LITERAL = 0
-const SEGMENT_PARAM = 1
+readonly SEGMENT_LITERAL = 0
+readonly SEGMENT_PARAM = 1
 
 export class RoutePatternError {
   readonly kind: string
@@ -477,7 +477,7 @@ function isNotModified(request: Request, etag: string, modifiedAt: Instant): boo
   since := Instant.parseHttpDate(ifModifiedSince) else {
     return false
   }
-  return modifiedAt.isAfter(since)
+  return modifiedAt.toEpochSeconds() <= since.toEpochSeconds()
 }
 
 function etagListContains(value: string, etag: string): bool {

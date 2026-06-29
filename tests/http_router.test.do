@@ -8,12 +8,15 @@ import {
   Server,
   ServerOptions,
   WebSocketConnection,
+  WebSocketEvent,
+  WebSocketSendText,
   WebSocketBinary,
   WebSocketClose,
   WebSocketError,
   WebSocketOpen,
   WebSocketText,
   WebSocketWritable,
+  createWebSocketConnection,
 } from "std/http-server"
 import { Path, parsePath } from "std/url"
 import {
@@ -121,7 +124,9 @@ function handleRouterWebSocketEvent(
   case textEvent {
     textSuccess: Success -> {
       state.text = textSuccess.value.text
-      try! textSuccess.value.connection.sendText("echo:" + textSuccess.value.text)
+      try! textSuccess.value.connection.commands.send(WebSocketSendText {
+        text: "echo:" + textSuccess.value.text,
+      })
       return
     }
     _: Failure -> {}
@@ -138,9 +143,9 @@ function handleRouterWebSocketEvent(
 }
 
 function websocketConnection(state: RouterWebSocketState): WebSocketConnection {
-  return WebSocketConnection {
-    handler: (event): void => handleRouterWebSocketEvent(state, event),
-  }
+  connection := createWebSocketConnection()
+  connection.events.onMessage((event: WebSocketEvent): void => handleRouterWebSocketEvent(state, event))
+  return connection
 }
 
 function assertCompileError(text: string, kind: string): void {
@@ -457,6 +462,7 @@ export function testRouterWebSocketRouteCanReturnConnection(): void {
     .websocket("/socket", (match: RouteMatch, request: Request): WebSocketRouteResult => websocketConnection(state))
 
   matched := router.handle(websocketRequest("/socket"))
+  runMainEventLoop()
 
   Assert.isTrue(matched == null)
   Assert.equal(state.errorKind, "missing-responder")

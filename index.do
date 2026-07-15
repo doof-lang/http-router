@@ -129,12 +129,7 @@ export class Router {
 
   handle(request: Request): HttpResponse | null {
     isWebSocketUpgrade := request.isWebSocketUpgrade()
-    parsed := parsePath(request.path)
-    path := case parsed {
-      s: Success -> s.value,
-      _: Failure -> null,
-    }
-    if path == null {
+    path := parsePath(request.path) else {
       return null
     }
 

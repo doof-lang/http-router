@@ -36,8 +36,8 @@ import {
 } from "../index"
 
 import class NativeWebSocketTestClient from "http-server/native_http_server_test_support.hpp" as doof_http_server_test::NativeWebSocketTestClient {
-  static startExchangeText(host: string, port: int, requestText: string, text: string): NativeWebSocketTestClient
-  wait(): string
+  isolated static startExchangeText(host: string, port: int, requestText: string, text: string): NativeWebSocketTestClient
+  isolated wait(): string
 }
 
 class RouterWebSocketState {

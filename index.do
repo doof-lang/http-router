@@ -58,7 +58,7 @@ export class StaticFileOptions {
 }
 
 export class RegisteredRoute {
-  readonly method: string | null
+  readonly method: string | none
   readonly pattern: RoutePattern
   readonly prefix: bool
   readonly websocket: bool
@@ -117,7 +117,7 @@ export class Router {
   }
 
   route(pattern: string, handler: RouteHandler): Router {
-    return this.add(null, pattern, true, handler)
+    return this.add(none, pattern, true, handler)
   }
 
   staticFiles(pattern: string, options: StaticFileOptions): Router {
@@ -127,10 +127,10 @@ export class Router {
     return this
   }
 
-  handle(request: Request): HttpResponse | null {
+  handle(request: Request): HttpResponse | none {
     isWebSocketUpgrade := request.isWebSocketUpgrade()
     path := parsePath(request.path) else {
-      return null
+      return none
     }
 
     allowedMethods: string[] := []
@@ -138,7 +138,7 @@ export class Router {
       matched := if route.prefix
         then matchRoutePrefix(route.pattern, path)
         else matchRoute(route.pattern, path)
-      if matched == null {
+      if matched == none {
         continue
       }
 
@@ -150,7 +150,7 @@ export class Router {
         continue
       }
 
-      if route.method != null && route.method! != request.method {
+      if route.method != none && route.method! != request.method {
         if !allowedMethods.contains(route.method!) {
           allowedMethods.push(route.method!)
         }
@@ -162,7 +162,7 @@ export class Router {
         http: Response -> return http
         websocket: WebSocketConnection -> {
           request.upgradeToWebSocket(websocket)
-          return null
+          return none
         }
       }
     }
@@ -171,10 +171,10 @@ export class Router {
       return methodNotAllowedResponse(allowedMethods.buildReadonly())
     }
 
-    return null
+    return none
   }
 
-  private add(method: string | null, pattern: string, prefix: bool, handler: RouteHandler): Router {
+  private add(method: string | none, pattern: string, prefix: bool, handler: RouteHandler): Router {
     compiled := compileRoutePatternOrPanic(pattern)
 
     this.routes.push(RegisteredRoute {
@@ -191,7 +191,7 @@ export class Router {
     compiled := compileRoutePatternOrPanic(pattern)
 
     this.routes.push(RegisteredRoute {
-      method: null,
+      method: none,
       pattern: compiled,
       prefix: false,
       websocket: true,
@@ -262,18 +262,18 @@ export function compileRoutePattern(pattern: string): Result<RoutePattern, Route
   }
 }
 
-export function matchRoute(pattern: RoutePattern, path: Path): RouteMatch | null {
+export function matchRoute(pattern: RoutePattern, path: Path): RouteMatch | none {
   matched := matchCompiled(pattern, path, false)
-  if matched == null {
-    return null
+  if matched == none {
+    return none
   }
   return matched!
 }
 
-export function matchRoutePrefix(pattern: RoutePattern, path: Path): RouteMatch | null {
+export function matchRoutePrefix(pattern: RoutePattern, path: Path): RouteMatch | none {
   matched := matchCompiled(pattern, path, true)
-  if matched == null {
-    return null
+  if matched == none {
+    return none
   }
   return matched!
 }
@@ -309,7 +309,7 @@ export function pathToFileSystemPath(root: string, path: Path): Result<string, F
   return Success { value: join(parts) }
 }
 
-export function mimeTypeForFileSystemPath(path: string): string | null {
+export function mimeTypeForFileSystemPath(path: string): string | none {
   ext := extension(path).toLowerCase()
   return case ext {
     ".html" | ".htm" -> "text/html; charset=utf-8",
@@ -341,29 +341,29 @@ export function mimeTypeForFileSystemPath(path: string): string | null {
     ".woff2" -> "font/woff2",
     ".ttf" -> "font/ttf",
     ".otf" -> "font/otf",
-    _ -> null
+    _ -> none
   }
 }
 
-export function cacheControlForFileSystemPath(path: string): string | null {
+export function cacheControlForFileSystemPath(path: string): string | none {
   ext := extension(path).toLowerCase()
   return case ext {
     ".html" | ".htm" -> "no-cache",
     ".css" | ".js" | ".mjs" | ".json" | ".map" | ".wasm" -> "public, max-age=3600",
     ".svg" | ".png" | ".jpg" | ".jpeg" | ".gif" | ".webp" | ".ico" | ".avif" -> "public, max-age=86400",
     ".woff" | ".woff2" | ".ttf" | ".otf" -> "public, max-age=31536000, immutable",
-    _ -> null
+    _ -> none
   }
 }
 
 export function fileSystemResponseHeaders(
   path: string,
-  contentType: string | null = null,
-  cacheControl: string | null = null,
+  contentType: string | none = none,
+  cacheControl: string | none = none,
 ): readonly HttpHeader[] {
   headers: HttpHeader[] := []
   resolvedContentType := contentType ?? mimeTypeForFileSystemPath(path)
-  if resolvedContentType != null {
+  if resolvedContentType != none {
     headers.push(HttpHeader {
       name: "Content-Type",
       value: resolvedContentType!,
@@ -371,7 +371,7 @@ export function fileSystemResponseHeaders(
   }
 
   resolvedCacheControl := cacheControl ?? cacheControlForFileSystemPath(path)
-  if resolvedCacheControl != null {
+  if resolvedCacheControl != none {
     headers.push(HttpHeader {
       name: "Cache-Control",
       value: resolvedCacheControl!,
@@ -462,7 +462,7 @@ function staticFileHeaders(path: string, fallbackContentType: string, etag: stri
 
 function isNotModified(request: Request, etag: string, modifiedAt: Instant): bool {
   ifNoneMatch := request.header("If-None-Match")
-  if ifNoneMatch != null {
+  if ifNoneMatch != none {
     return etagListContains(ifNoneMatch!, etag)
   }
 
@@ -498,19 +498,19 @@ function etagListContains(value: string, etag: string): bool {
   return false
 }
 
-function matchCompiled(pattern: RoutePattern, path: Path, allowPrefix: bool): RouteMatch | null {
+function matchCompiled(pattern: RoutePattern, path: Path, allowPrefix: bool): RouteMatch | none {
   params: Map<string, string> := {}
   let segmentIndex = 0
 
   for routeSegment of pattern.segments {
     if segmentIndex >= path.segments.length {
-      return null
+      return none
     }
 
     pathSegment := path.segments[segmentIndex]
     if routeSegment.kind == SEGMENT_LITERAL {
       if pathSegment != routeSegment.text {
-        return null
+        return none
       }
     } else {
       params[routeSegment.text] = pathSegment
@@ -521,7 +521,7 @@ function matchCompiled(pattern: RoutePattern, path: Path, allowPrefix: bool): Ro
 
   if segmentIndex < path.segments.length {
     if !allowPrefix {
-      return null
+      return none
     }
     return RouteMatch {
       params: params.buildReadonly(),

@@ -168,7 +168,7 @@ export class Router {
     }
 
     if allowedMethods.length > 0 {
-      return methodNotAllowedResponse(allowedMethods.buildReadonly())
+      return methodNotAllowedResponse(allowedMethods.drainToReadonly())
     }
 
     return none
@@ -257,7 +257,7 @@ export function compileRoutePattern(pattern: string): Result<RoutePattern, Route
   return Success {
     value: RoutePattern {
       pattern,
-      segments: segments.buildReadonly(),
+      segments: segments.drainToReadonly(),
     }
   }
 }
@@ -378,7 +378,7 @@ export function fileSystemResponseHeaders(
     })
   }
 
-  return headers.buildReadonly()
+  return headers.drainToReadonly()
 }
 
 export function fileSystemETag(size: long, modifiedAt: Instant): string {
@@ -457,7 +457,7 @@ function staticFileHeaders(path: string, fallbackContentType: string, etag: stri
   }
   headers.push(HttpHeader { name: "ETag", value: etag })
   headers.push(HttpHeader { name: "Last-Modified", value: lastModified })
-  return headers.buildReadonly()
+  return headers.drainToReadonly()
 }
 
 function isNotModified(request: Request, etag: string, modifiedAt: Instant): bool {
@@ -524,13 +524,13 @@ function matchCompiled(pattern: RoutePattern, path: Path, allowPrefix: bool): Ro
       return none
     }
     return RouteMatch {
-      params: params.buildReadonly(),
+      params: params.drainToReadonly(),
       remaining: remainingPath(path, segmentIndex),
     }
   }
 
   return RouteMatch {
-    params: params.buildReadonly(),
+    params: params.drainToReadonly(),
     remaining: emptyRemainingPath(),
   }
 }
@@ -544,7 +544,7 @@ function methodNotAllowedResponse(methods: readonly string[]): HttpResponse {
   body: readonly byte[] := readonly []
   return Response {
     status: 405,
-    headers: headers.buildReadonly(),
+    headers: headers.drainToReadonly(),
     body
   }
 }
@@ -578,7 +578,7 @@ function normalizedSegments(pattern: string): readonly string[] {
     return readonly []
   }
 
-  return pattern.substring(start, end).split("/").buildReadonly()
+  return pattern.substring(start, end).split("/").drainToReadonly()
 }
 
 function remainingPath(path: Path, start: int): Path {
@@ -588,7 +588,7 @@ function remainingPath(path: Path, start: int): Path {
   }
   return Path {
     absolute: false,
-    segments: segments.buildReadonly(),
+    segments: segments.drainToReadonly(),
   }
 }
 

@@ -62,7 +62,7 @@ export class RegisteredRoute {
   readonly pattern: RoutePattern
   readonly prefix: bool
   readonly websocket: bool
-  readonly handler: (it: RouteMatch, request: Request): Response | WebSocketConnection
+  handler: (it: RouteMatch, request: Request): Response | WebSocketConnection
 }
 
 export class Router {
@@ -578,7 +578,7 @@ function normalizedSegments(pattern: string): readonly string[] {
     return readonly []
   }
 
-  return pattern.substring(start, end).split("/").drainToReadonly()
+  return pattern.substring(start, end).split("/")
 }
 
 function remainingPath(path: Path, start: int): Path {

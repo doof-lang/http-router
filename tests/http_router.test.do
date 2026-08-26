@@ -41,9 +41,9 @@ import class NativeWebSocketTestClient from "http-server/native_http_server_test
 }
 
 class RouterWebSocketState {
-  openCount: int = 0
-  text: string = ""
-  errorKind: string = ""
+  let openCount: int = 0
+  let text: string = ""
+  let errorKind: string = ""
 }
 
 function path(text: string): Path => try! parsePath(text)

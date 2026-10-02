@@ -46,9 +46,9 @@ class RouterWebSocketState {
   let errorKind: string = ""
 }
 
-function path(text: string): Path => try! parsePath(text)
+function path(text: string): Path => parsePath(text)!
 
-function pattern(text: string): RoutePattern => try! compileRoutePattern(text)
+function pattern(text: string): RoutePattern => compileRoutePattern(text)!
 
 function request(method: string, path: string): Request {
   return Request {
@@ -124,9 +124,9 @@ function handleRouterWebSocketEvent(
   case textEvent {
     textSuccess: Success -> {
       state.text = textSuccess.value.text
-      try! textSuccess.value.connection.commands.send(WebSocketSendText {
+      textSuccess.value.connection.commands.send(WebSocketSendText {
         text: "echo:" + textSuccess.value.text,
-      })
+      })!
       return
     }
     _: Failure -> {}
@@ -217,13 +217,13 @@ export function testPrefixMatchCanBeExact(): none {
 }
 
 export function testPathToFileSystemPathAppliesUrlPathRelativeToRoot(): none {
-  mapped := try! pathToFileSystemPath("/srv/www", path("/assets/css/site.css"))
+  mapped := pathToFileSystemPath("/srv/www", path("/assets/css/site.css"))!
 
   Assert.equal(mapped, "/srv/www/assets/css/site.css")
 }
 
 export function testPathToFileSystemPathIgnoresAbsoluteUrlMarkerAndEmptySegments(): none {
-  mapped := try! pathToFileSystemPath("/srv/www/", path("/assets//icons/"))
+  mapped := pathToFileSystemPath("/srv/www/", path("/assets//icons/"))!
 
   Assert.equal(mapped, "/srv/www/assets/icons")
 }
@@ -239,7 +239,7 @@ export function testRouteMatchCanMapRemainingPathToFileSystemPath(): none {
   matched := matchRoutePrefix(pattern("/static"), path("/static/images/logo.png"))
 
   Assert.isTrue(matched != none)
-  mapped := try! matched!.remainingFileSystemPath("/srv/www")
+  mapped := matched!.remainingFileSystemPath("/srv/www")!
   Assert.equal(mapped, "/srv/www/images/logo.png")
 }
 
@@ -352,7 +352,7 @@ export function testRouterMethodPrefixRoutesMatchSubpathsAndReturnMethodNotAllow
 export function testRouterStaticFilesServesGetHeadAndConditionals(): none {
   root := "."
   filePath := root + "/.http-router-static.css"
-  try! writeText(filePath, "static body")
+  writeText(filePath, "static body")!
 
   router := Router()
     .staticFiles("/", StaticFileOptions { root })
@@ -373,7 +373,7 @@ export function testRouterStaticFilesServesGetHeadAndConditionals(): none {
     readonly [HttpHeader { name: "If-Modified-Since", value: lastModified }],
   ))!
 
-  try! remove(filePath)
+  remove(filePath)!
 
   Assert.equal(getResponse.status, 200)
   Assert.equal(header(getResponse, "Content-Type")!, "text/css; charset=utf-8")
@@ -482,16 +482,16 @@ export function testRouterWebSocketConnectionReturnUpgradesServerRequest(): none
   requestReceiver.onMessage((request: Request): none => {
     response := router.handle(request)
     if response != none {
-      try! request.respond(response!)
+      request.respond(response!)!
     }
     requestChannel!.close()
   })
   requestChannel = requests
 
-  server := try! Server.listen{
+  server := Server.listen{
     options: ServerOptions { port: 0 },
     requests,
-  }
+  }!
 
   client := NativeWebSocketTestClient.startExchangeText(
     server.host,
@@ -502,7 +502,7 @@ export function testRouterWebSocketConnectionReturnUpgradesServerRequest(): none
 
   runMainEventLoop()
   clientResponse := client.wait()
-  try! server.close()
+  server.close()!
 
   Assert.equal(state.openCount, 1, clientResponse)
   Assert.equal(state.text, "hello", clientResponse)
